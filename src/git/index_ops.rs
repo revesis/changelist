@@ -33,3 +33,11 @@ pub fn commit_only(repo_root: &Path, message: &str, paths: &[&str]) -> Result<()
     run_git(repo_root, &args)?;
     Ok(())
 }
+
+/// Pushes the current branch via plain `git push` (relies on the branch's
+/// configured upstream; if none is set, surfaces git's own error asking the
+/// user to set one rather than guessing a remote/branch to push to).
+pub fn push(repo_root: &Path) -> Result<(), GitError> {
+    run_git(repo_root, &["push"])?;
+    Ok(())
+}

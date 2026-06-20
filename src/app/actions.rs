@@ -40,6 +40,7 @@ pub enum Action {
     OpenMove,
     OpenConfirmDelete,
     OpenCommit,
+    Push,
     SetActiveSelected,
     InputChar(char),
     Backspace,
@@ -134,6 +135,11 @@ impl App {
                             });
                         }
                     }
+                }
+            }
+            Action::Push => {
+                if let Err(e) = self.push() {
+                    self.status_message = Some(format!("push failed: {e}"));
                 }
             }
             Action::SetActiveSelected => {

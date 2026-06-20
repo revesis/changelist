@@ -55,6 +55,7 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         "a                 set selected changelist active",
         "m                 move selected (or visual-range) files",
         "c                 commit selected changelist",
+        "Shift+P           push current branch",
         "Ctrl+R / F5       manual refresh",
         "?                 toggle this help",
         "q / Ctrl+C        quit",
@@ -209,7 +210,7 @@ fn status_badge(app: &App, path: &str) -> String {
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let text = app.status_message.clone().unwrap_or_else(|| {
-        "Tab:pane j/k:move h/l:hscroll Space:stage V:visual v:diff-mode n:new r:rename d:delete a:active m:move c:commit ?:help q:quit"
+        "Tab:pane j/k:move h/l:hscroll Space:stage V:visual v:diff-mode n:new r:rename d:delete a:active m:move c:commit P:push ?:help q:quit"
             .to_string()
     });
     frame.render_widget(Paragraph::new(text), area);

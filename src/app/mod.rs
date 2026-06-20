@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::error::{AppError, Result};
 use crate::git::diff::{diff_staged, diff_worktree};
-use crate::git::index_ops::{add as git_add, reset_path as git_reset_path};
+use crate::git::index_ops::{add as git_add, push as git_push, reset_path as git_reset_path};
 use crate::git::status::{git_status, ChangeKind, StatusEntry};
 use crate::model::{ChangelistId, ChangelistStore};
 
@@ -332,6 +332,15 @@ impl App {
             }
         }
         self.refresh()
+    }
+
+    /// Pushes the current branch (`git push`, using its configured
+    /// upstream). Purely a passthrough to the working tree's remote state —
+    /// doesn't touch the changelist store, so no `refresh()` is needed.
+    pub fn push(&mut self) -> Result<()> {
+        git_push(&self.repo_root).map_err(AppError::GitCommand)?;
+        self.status_message = Some("pushed".to_string());
+        Ok(())
     }
 }
 

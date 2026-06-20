@@ -44,6 +44,7 @@ fn map_normal_key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         KeyCode::Char('m') => Some(Action::OpenMove),
         KeyCode::Char('d') => Some(Action::OpenConfirmDelete),
         KeyCode::Char('c') => Some(Action::OpenCommit),
+        KeyCode::Char('P') => Some(Action::Push),
         KeyCode::Char('a') => Some(Action::SetActiveSelected),
         KeyCode::Char('v') => Some(Action::ToggleDiffMode),
         KeyCode::Char(' ') => Some(Action::ToggleStage),
