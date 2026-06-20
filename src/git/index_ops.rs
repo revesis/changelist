@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::GitError;
-use crate::git::command::run_git;
+use crate::git::command::{run_git, run_git_with_env};
 
 pub fn add(repo_root: &Path, paths: &[&str]) -> Result<(), GitError> {
     if paths.is_empty() {
@@ -37,7 +37,12 @@ pub fn commit_only(repo_root: &Path, message: &str, paths: &[&str]) -> Result<()
 /// Pushes the current branch via plain `git push` (relies on the branch's
 /// configured upstream; if none is set, surfaces git's own error asking the
 /// user to set one rather than guessing a remote/branch to push to).
+/// `GIT_TERMINAL_PROMPT=0` (plus a null stdin) makes git fail fast with a
+/// "could not read Username" error instead of hanging: the TUI owns the
+/// real terminal in raw mode, so an interactive credential prompt has no
+/// usable stdin to read from and would otherwise block forever. Set up a
+/// credential helper or SSH key beforehand so pushes don't need a prompt.
 pub fn push(repo_root: &Path) -> Result<(), GitError> {
-    run_git(repo_root, &["push"])?;
+    run_git_with_env(repo_root, &["push"], &[("GIT_TERMINAL_PROMPT", "0")])?;
     Ok(())
 }
