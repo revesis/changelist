@@ -35,6 +35,7 @@ fn main() -> anyhow::Result<()> {
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
     while !app.should_quit {
+        app.poll_push();
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         if event::poll(Duration::from_millis(250))? {

@@ -48,7 +48,15 @@ pub struct App {
     /// change, not on every redraw (the render loop redraws continuously,
     /// independent of whether anything happened).
     diff_cache: Option<(String, DiffMode, std::result::Result<String, String>)>,
+    /// Set while a `git push` runs on a background thread; polled
+    /// non-blockingly from the main loop so the spinner animation in the
+    /// status bar keeps redrawing instead of the whole TUI freezing for the
+    /// duration of the (potentially slow, network-bound) push.
+    push_pending: Option<std::sync::mpsc::Receiver<std::result::Result<(), String>>>,
+    spinner_frame: usize,
 }
+
+const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 impl App {
     pub fn new(repo_root: PathBuf) -> Result<Self> {
@@ -71,6 +79,8 @@ impl App {
             file_hscroll: 0,
             visual_anchor: None,
             diff_cache: None,
+            push_pending: None,
+            spinner_frame: 0,
         };
         app.refresh()?;
         Ok(app)
@@ -334,14 +344,53 @@ impl App {
         self.refresh()
     }
 
-    /// Pushes the current branch (`git push`, using its configured
-    /// upstream). Purely a passthrough to the working tree's remote state —
-    /// doesn't touch the changelist store, so no `refresh()` is needed.
-    pub fn push(&mut self) -> Result<()> {
-        git_push(&self.repo_root).map_err(AppError::GitCommand)?;
-        self.status_message = Some("pushed".to_string());
-        Ok(())
+    /// Kicks off `git push` on a background thread (it's network-bound and
+    /// can take a noticeable while) and returns immediately so the render
+    /// loop keeps animating a spinner via `poll_push` instead of the whole
+    /// TUI freezing for the duration of the push.
+    pub fn start_push(&mut self) {
+        if self.push_pending.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repo_root = self.repo_root.clone();
+        std::thread::spawn(move || {
+            let result = git_push(&repo_root).map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        });
+        self.push_pending = Some(rx);
+        self.spinner_frame = 0;
     }
+
+    /// Non-blocking check for a background push started by `start_push`.
+    /// Called every iteration of the main loop so the spinner advances on
+    /// every redraw tick (~250ms) regardless of key input, and the result
+    /// (success/failure) lands in `status_message` as soon as it's ready.
+    pub fn poll_push(&mut self) {
+        let Some(rx) = &self.push_pending else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(())) => {
+                self.status_message = Some("pushed".to_string());
+                self.push_pending = None;
+            }
+            Ok(Err(e)) => {
+                self.status_message = Some(format!("push failed: {e}"));
+                self.push_pending = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.status_message = Some("push failed: worker thread died".to_string());
+                self.push_pending = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                let frame = SPINNER_FRAMES[self.spinner_frame % SPINNER_FRAMES.len()];
+                self.status_message = Some(format!("{frame} pushing..."));
+                self.spinner_frame = self.spinner_frame.wrapping_add(1);
+            }
+        }
+    }
+
 }
 
 fn clamp_index(current: usize, delta: i32, len: usize) -> usize {

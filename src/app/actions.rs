@@ -137,11 +137,7 @@ impl App {
                     }
                 }
             }
-            Action::Push => {
-                if let Err(e) = self.push() {
-                    self.status_message = Some(format!("push failed: {e}"));
-                }
-            }
+            Action::Push => self.start_push(),
             Action::SetActiveSelected => {
                 if self.focused_pane == Pane::Changelists {
                     if let Some(id) = self.selected_changelist_id() {
