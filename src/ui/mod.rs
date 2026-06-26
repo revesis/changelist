@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, Pane};
+use crate::app::{App, Pane, TreeRow};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -19,16 +19,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let panes = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(30),
-            Constraint::Percentage(45),
-        ])
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(chunks[0]);
 
-    draw_changelist_pane(frame, app, panes[0]);
-    draw_file_pane(frame, app, panes[1]);
-    diff_pane::draw(frame, app, panes[2]);
+    draw_tree_pane(frame, app, panes[0]);
+    diff_pane::draw(frame, app, panes[1]);
     draw_status_bar(frame, app, chunks[1]);
     popup::draw(frame, app, area);
     if app.show_help {
@@ -41,20 +36,20 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
     use ratatui::widgets::Clear;
 
     let lines = [
-        "Tab / Shift+Tab   cycle pane focus (changelists/files/diff)",
+        "Tab / Shift+Tab   cycle pane focus (tree/diff)",
         "j/k, Up/Down      move selection, or scroll diff vertically when focused",
         "h/l, Left/Right   scroll the focused pane horizontally (long paths/lines)",
-        "Enter             drill into files pane",
+        "Enter             fold/unfold changelist",
         "Space             stage/unstage selected (or visual-range) files",
-        "Shift+V           toggle visual mode in files pane (batch select)",
+        "Shift+V           toggle visual mode on a file row (batch select)",
         "Esc               exit visual mode",
         "v                 toggle working-tree/staged diff",
         "n                 new changelist",
-        "r                 rename selected changelist",
-        "d                 delete selected changelist",
-        "a                 set selected changelist active",
-        "m                 move selected (or visual-range) files",
-        "c                 commit selected changelist",
+        "r                 rename selected changelist (cursor on header)",
+        "d                 delete selected changelist (cursor on header)",
+        "a                 set selected changelist active (cursor on header)",
+        "m                 move selected (or visual-range) files (cursor on file)",
+        "c                 commit selected changelist (cursor on header)",
         "Shift+P           push current branch",
         "Ctrl+R / F5       manual refresh",
         "?                 toggle this help",
@@ -101,32 +96,63 @@ fn highlight_style(focused: bool) -> Style {
     }
 }
 
-fn draw_changelist_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let focused = app.focused_pane == Pane::Changelists;
+fn draw_tree_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let focused = app.focused_pane == Pane::Tree;
+    let visual_rows = app.visual_file_rows().unwrap_or_default();
+
     let items: Vec<ListItem> = app
-        .store
-        .changelists
+        .tree_rows
         .iter()
         .enumerate()
-        .map(|(idx, cl)| {
-            let marker = if cl.id == app.store.active_changelist {
-                "* "
-            } else {
-                "  "
-            };
-            let count = app.store.files_in(&cl.id).len();
-            let line = hscrolled(&format!("{marker}{} ({count})", cl.name), app.changelist_hscroll);
-            let style = if idx == app.selected_changelist_idx {
-                highlight_style(focused)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(Span::styled(line, style)))
+        .map(|(row_idx, row)| match row {
+            TreeRow::Header(cl_idx) => {
+                let cl = &app.store.changelists[*cl_idx];
+                let icon = if app.collapsed.contains(cl_idx) { "▶" } else { "▼" };
+                let marker = if cl.id == app.store.active_changelist { "* " } else { "  " };
+                let count = app.store.files_in(&cl.id).len();
+                let text = hscrolled(
+                    &format!("{icon} {marker}{} ({count})", cl.name),
+                    app.tree_hscroll,
+                );
+                let style = if row_idx == app.tree_cursor {
+                    highlight_style(focused)
+                } else {
+                    Style::default().add_modifier(Modifier::BOLD)
+                };
+                ListItem::new(Line::from(Span::styled(text, style)))
+            }
+            TreeRow::File(cl_idx, file_idx) => {
+                let cl = &app.store.changelists[*cl_idx];
+                let files = app.store.files_in(&cl.id);
+                let path = files.get(*file_idx).copied().unwrap_or("");
+                let badge = status_badge(app, path);
+                let file_name = std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string());
+                let text = hscrolled(
+                    &format!("  {badge} {file_name}  {path}"),
+                    app.tree_hscroll,
+                );
+                let style = if row_idx == app.tree_cursor {
+                    highlight_style(focused)
+                } else if visual_rows.contains(&row_idx) {
+                    Style::default().fg(Color::Black).bg(Color::Yellow)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(text, style)))
+            }
         })
         .collect();
 
+    let title = if app.visual_anchor.is_some() {
+        "Changes [VISUAL]"
+    } else {
+        "Changes"
+    };
     let block = Block::default()
-        .title("Changelists")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(if focused {
             Style::default().fg(Color::Cyan)
@@ -134,56 +160,7 @@ fn draw_changelist_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rec
             Style::default()
         });
 
-    let mut state = ListState::default().with_selected(Some(app.selected_changelist_idx));
-    frame.render_stateful_widget(List::new(items).block(block), area, &mut state);
-}
-
-fn draw_file_pane(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let focused = app.focused_pane == Pane::Files;
-    let cl_name = app
-        .selected_changelist_id()
-        .and_then(|id| app.store.changelist_by_id(&id))
-        .map(|c| c.name.clone())
-        .unwrap_or_default();
-
-    let visual_range = app.visual_range();
-    let files = app.files_in_selected_changelist();
-    let items: Vec<ListItem> = files
-        .iter()
-        .enumerate()
-        .map(|(idx, path)| {
-            let badge = status_badge(app, path);
-            let file_name = std::path::Path::new(path)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string());
-            let line = hscrolled(&format!("{badge} {file_name} {path}"), app.file_hscroll);
-            let in_visual_range = visual_range.is_some_and(|(lo, hi)| idx >= lo && idx <= hi);
-            let style = if idx == app.selected_file_idx {
-                highlight_style(focused)
-            } else if in_visual_range {
-                Style::default().fg(Color::Black).bg(Color::Yellow)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(Span::styled(line, style)))
-        })
-        .collect();
-
-    let title = if app.visual_anchor.is_some() {
-        format!("Files in: {cl_name} [VISUAL]")
-    } else {
-        format!("Files in: {cl_name}")
-    };
-    let block = Block::default().title(title).borders(Borders::ALL).border_style(
-        if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        },
-    );
-
-    let mut state = ListState::default().with_selected(Some(app.selected_file_idx));
+    let mut state = ListState::default().with_selected(Some(app.tree_cursor));
     frame.render_stateful_widget(List::new(items).block(block), area, &mut state);
 }
 

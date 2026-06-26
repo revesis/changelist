@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod commit;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::error::{AppError, Result};
@@ -11,10 +12,15 @@ use crate::model::{ChangelistId, ChangelistStore};
 
 pub use actions::{Action, Popup};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeRow {
+    Header(usize),
+    File(usize, usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
-    Changelists,
-    Files,
+    Tree,
     Diff,
 }
 
@@ -29,8 +35,10 @@ pub struct App {
     pub store: ChangelistStore,
     pub status: Vec<StatusEntry>,
     pub focused_pane: Pane,
-    pub selected_changelist_idx: usize,
-    pub selected_file_idx: usize,
+    pub tree_rows: Vec<TreeRow>,
+    pub tree_cursor: usize,
+    pub collapsed: HashSet<usize>,
+    pub tree_hscroll: u16,
     pub status_message: Option<String>,
     pub should_quit: bool,
     pub popup: Option<Popup>,
@@ -38,20 +46,10 @@ pub struct App {
     pub show_help: bool,
     pub diff_scroll: u16,
     pub diff_hscroll: u16,
-    pub changelist_hscroll: u16,
-    pub file_hscroll: u16,
-    /// When `Some(idx)`, the Files pane is in visual (batch-select) mode,
-    /// anchored at `idx`; the selected range is `[anchor, selected_file_idx]`.
+    /// When `Some(idx)`, the tree is in visual (batch-select) mode anchored
+    /// at `idx` (an index into `tree_rows` pointing at a File row).
     pub visual_anchor: Option<usize>,
-    /// Cache for the current file's diff, keyed on (path, mode) so a `git
-    /// diff` subprocess is only spawned when the diff actually needs to
-    /// change, not on every redraw (the render loop redraws continuously,
-    /// independent of whether anything happened).
     diff_cache: Option<(String, DiffMode, std::result::Result<String, String>)>,
-    /// Set while a `git push` runs on a background thread; polled
-    /// non-blockingly from the main loop so the spinner animation in the
-    /// status bar keeps redrawing instead of the whole TUI freezing for the
-    /// duration of the (potentially slow, network-bound) push.
     push_pending: Option<std::sync::mpsc::Receiver<std::result::Result<(), String>>>,
     spinner_frame: usize,
 }
@@ -65,9 +63,11 @@ impl App {
             repo_root,
             store,
             status: Vec::new(),
-            focused_pane: Pane::Changelists,
-            selected_changelist_idx: 0,
-            selected_file_idx: 0,
+            focused_pane: Pane::Tree,
+            tree_rows: Vec::new(),
+            tree_cursor: 0,
+            collapsed: HashSet::new(),
+            tree_hscroll: 0,
             status_message: None,
             should_quit: false,
             popup: None,
@@ -75,8 +75,6 @@ impl App {
             show_help: false,
             diff_scroll: 0,
             diff_hscroll: 0,
-            changelist_hscroll: 0,
-            file_hscroll: 0,
             visual_anchor: None,
             diff_cache: None,
             push_pending: None,
@@ -93,6 +91,7 @@ impl App {
         if dirty {
             self.store.save(&self.repo_root)?;
         }
+        self.rebuild_tree_rows();
         self.clamp_selection();
         self.diff_scroll = 0;
         self.diff_hscroll = 0;
@@ -100,38 +99,58 @@ impl App {
         Ok(())
     }
 
-    pub fn selected_changelist_id(&self) -> Option<ChangelistId> {
-        self.store
-            .changelists
-            .get(self.selected_changelist_idx)
-            .map(|c| c.id.clone())
+    fn rebuild_tree_rows(&mut self) {
+        self.tree_rows.clear();
+        for (cl_idx, cl) in self.store.changelists.iter().enumerate() {
+            self.tree_rows.push(TreeRow::Header(cl_idx));
+            if !self.collapsed.contains(&cl_idx) {
+                let count = self.store.files_in(&cl.id).len();
+                for file_idx in 0..count {
+                    self.tree_rows.push(TreeRow::File(cl_idx, file_idx));
+                }
+            }
+        }
     }
 
-    pub fn files_in_selected_changelist(&self) -> Vec<&str> {
-        match self.selected_changelist_id() {
-            Some(id) => self.store.files_in(&id),
-            None => Vec::new(),
-        }
+    pub fn cursor_on_header(&self) -> bool {
+        matches!(self.tree_rows.get(self.tree_cursor), Some(TreeRow::Header(_)))
+    }
+
+    pub fn cursor_on_file(&self) -> bool {
+        matches!(self.tree_rows.get(self.tree_cursor), Some(TreeRow::File(_, _)))
+    }
+
+    /// The changelist the cursor is currently on (either its header, or the
+    /// parent of the file row it's on).
+    pub fn focused_changelist_id(&self) -> Option<ChangelistId> {
+        let cl_idx = match self.tree_rows.get(self.tree_cursor)? {
+            TreeRow::Header(i) | TreeRow::File(i, _) => *i,
+        };
+        self.store.changelists.get(cl_idx).map(|c| c.id.clone())
+    }
+
+    /// The file path the cursor is currently on, or `None` if on a header.
+    pub fn focused_file_path(&self) -> Option<String> {
+        let (cl_idx, file_idx) = match self.tree_rows.get(self.tree_cursor)? {
+            TreeRow::File(ci, fi) => (*ci, *fi),
+            TreeRow::Header(_) => return None,
+        };
+        let cl = self.store.changelists.get(cl_idx)?;
+        self.store.files_in(&cl.id).get(file_idx).map(|s| s.to_string())
     }
 
     fn clamp_selection(&mut self) {
-        let cl_len = self.store.changelists.len();
-        if cl_len == 0 {
-            self.selected_changelist_idx = 0;
-        } else if self.selected_changelist_idx >= cl_len {
-            self.selected_changelist_idx = cl_len - 1;
-        }
-        let file_len = self.files_in_selected_changelist().len();
-        if file_len == 0 {
-            self.selected_file_idx = 0;
+        let len = self.tree_rows.len();
+        if len == 0 {
+            self.tree_cursor = 0;
             self.visual_anchor = None;
         } else {
-            if self.selected_file_idx >= file_len {
-                self.selected_file_idx = file_len - 1;
+            if self.tree_cursor >= len {
+                self.tree_cursor = len - 1;
             }
             if let Some(anchor) = self.visual_anchor {
-                if anchor >= file_len {
-                    self.visual_anchor = Some(file_len - 1);
+                if anchor >= len {
+                    self.visual_anchor = Some(len - 1);
                 }
             }
         }
@@ -139,21 +158,27 @@ impl App {
 
     pub fn move_selection(&mut self, delta: i32) {
         match self.focused_pane {
-            Pane::Changelists => {
-                let len = self.store.changelists.len();
+            Pane::Tree => {
+                let len = self.tree_rows.len();
                 if len > 0 {
-                    self.selected_changelist_idx =
-                        clamp_index(self.selected_changelist_idx, delta, len);
-                    self.selected_file_idx = 0;
-                    self.visual_anchor = None;
-                    self.diff_scroll = 0;
-                    self.diff_hscroll = 0;
-                }
-            }
-            Pane::Files => {
-                let len = self.files_in_selected_changelist().len();
-                if len > 0 {
-                    self.selected_file_idx = clamp_index(self.selected_file_idx, delta, len);
+                    let anchor_cl = self.visual_anchor.and_then(|a| {
+                        match self.tree_rows.get(a) {
+                            Some(TreeRow::File(ci, _)) => Some(*ci),
+                            _ => None,
+                        }
+                    });
+                    self.tree_cursor = clamp_index(self.tree_cursor, delta, len);
+                    // Exit visual mode if the cursor crosses into a different changelist
+                    if let Some(acl) = anchor_cl {
+                        let cursor_cl = match self.tree_rows.get(self.tree_cursor) {
+                            Some(TreeRow::File(ci, _)) => Some(*ci),
+                            Some(TreeRow::Header(ci)) => Some(*ci),
+                            None => None,
+                        };
+                        if cursor_cl != Some(acl) {
+                            self.visual_anchor = None;
+                        }
+                    }
                     self.diff_scroll = 0;
                     self.diff_hscroll = 0;
                 }
@@ -162,18 +187,11 @@ impl App {
         }
     }
 
-    /// Scrolls the currently focused pane horizontally (`h`/`l`, Left/Right) —
-    /// useful when file paths or diff lines are wider than the pane.
     pub fn scroll_horizontal(&mut self, delta: i32) {
         match self.focused_pane {
-            Pane::Changelists => {
-                let max = self.max_changelist_hscroll() as i32;
-                self.changelist_hscroll =
-                    (self.changelist_hscroll as i32 + delta).clamp(0, max) as u16;
-            }
-            Pane::Files => {
-                let max = self.max_file_hscroll() as i32;
-                self.file_hscroll = (self.file_hscroll as i32 + delta).clamp(0, max) as u16;
+            Pane::Tree => {
+                let max = self.max_tree_hscroll() as i32;
+                self.tree_hscroll = (self.tree_hscroll as i32 + delta).clamp(0, max) as u16;
             }
             Pane::Diff => {
                 let max = self.max_diff_hscroll() as i32;
@@ -182,20 +200,24 @@ impl App {
         }
     }
 
-    fn max_changelist_hscroll(&self) -> u16 {
-        self.store
-            .changelists
+    fn max_tree_hscroll(&self) -> u16 {
+        self.tree_rows
             .iter()
-            .map(|c| c.name.chars().count())
-            .max()
-            .unwrap_or(0)
-            .saturating_sub(1) as u16
-    }
-
-    fn max_file_hscroll(&self) -> u16 {
-        self.files_in_selected_changelist()
-            .iter()
-            .map(|p| p.chars().count())
+            .map(|row| match row {
+                TreeRow::Header(ci) => {
+                    let cl = &self.store.changelists[*ci];
+                    let count = self.store.files_in(&cl.id).len();
+                    // "▼ * name (count)" or "▶   name (count)"
+                    4 + cl.name.chars().count() + 3 + count.to_string().len()
+                }
+                TreeRow::File(ci, fi) => {
+                    let cl = &self.store.changelists[*ci];
+                    let files = self.store.files_in(&cl.id);
+                    let path = files.get(*fi).copied().unwrap_or("");
+                    // "  [MW] filename  path"
+                    2 + 4 + 1 + path.chars().count() + 2 + path.chars().count()
+                }
+            })
             .max()
             .unwrap_or(0)
             .saturating_sub(1) as u16
@@ -214,34 +236,32 @@ impl App {
     }
 
     pub fn cycle_pane(&mut self) {
-        if self.focused_pane == Pane::Files {
+        if self.focused_pane == Pane::Tree {
             self.visual_anchor = None;
         }
         self.focused_pane = match self.focused_pane {
-            Pane::Changelists => Pane::Files,
-            Pane::Files => Pane::Diff,
-            Pane::Diff => Pane::Changelists,
+            Pane::Tree => Pane::Diff,
+            Pane::Diff => Pane::Tree,
         };
     }
 
     pub fn cycle_pane_back(&mut self) {
-        if self.focused_pane == Pane::Files {
+        if self.focused_pane == Pane::Tree {
             self.visual_anchor = None;
         }
         self.focused_pane = match self.focused_pane {
-            Pane::Changelists => Pane::Diff,
-            Pane::Files => Pane::Changelists,
-            Pane::Diff => Pane::Files,
+            Pane::Tree => Pane::Diff,
+            Pane::Diff => Pane::Tree,
         };
     }
 
     pub fn toggle_visual_mode(&mut self) {
-        if self.focused_pane != Pane::Files {
+        if !self.cursor_on_file() {
             return;
         }
         self.visual_anchor = match self.visual_anchor {
             Some(_) => None,
-            None => Some(self.selected_file_idx),
+            None => Some(self.tree_cursor),
         };
     }
 
@@ -249,30 +269,47 @@ impl App {
         self.visual_anchor = None;
     }
 
-    /// The range of file-pane row indices currently selected for a batch
-    /// operation: just the cursor row in normal mode, or `[anchor,
-    /// selected_file_idx]` (in either order) while in visual mode.
-    pub fn visual_range(&self) -> Option<(usize, usize)> {
-        self.visual_anchor
-            .map(|a| (a.min(self.selected_file_idx), a.max(self.selected_file_idx)))
+    /// Returns the set of `tree_rows` indices that are File rows within the
+    /// visual selection range, restricted to the same changelist as the anchor.
+    pub fn visual_file_rows(&self) -> Option<std::collections::HashSet<usize>> {
+        let anchor = self.visual_anchor?;
+        let anchor_cl = match self.tree_rows.get(anchor)? {
+            TreeRow::File(ci, _) => *ci,
+            _ => return None,
+        };
+        let lo = anchor.min(self.tree_cursor);
+        let hi = anchor.max(self.tree_cursor);
+        let set = (lo..=hi)
+            .filter(|&i| {
+                matches!(self.tree_rows.get(i), Some(TreeRow::File(ci, _)) if *ci == anchor_cl)
+            })
+            .collect();
+        Some(set)
     }
 
     pub fn selected_file_path(&self) -> Option<String> {
-        self.files_in_selected_changelist()
-            .get(self.selected_file_idx)
-            .map(|s| s.to_string())
+        self.focused_file_path()
     }
 
     /// All file paths targeted by the next action: the single selected file
     /// normally, or every file in the visual-mode range when active.
     pub fn selected_file_paths(&self) -> Vec<String> {
-        let files = self.files_in_selected_changelist();
-        match self.visual_range() {
-            Some((lo, hi)) if !files.is_empty() => {
-                let hi = hi.min(files.len() - 1);
-                files[lo..=hi].iter().map(|s| s.to_string()).collect()
-            }
-            _ => self.selected_file_path().into_iter().collect(),
+        if let Some(visual_rows) = self.visual_file_rows() {
+            let mut paths: Vec<String> = visual_rows
+                .into_iter()
+                .filter_map(|i| {
+                    let (ci, fi) = match self.tree_rows.get(i)? {
+                        TreeRow::File(ci, fi) => (*ci, *fi),
+                        _ => return None,
+                    };
+                    let cl = self.store.changelists.get(ci)?;
+                    self.store.files_in(&cl.id).get(fi).map(|s| s.to_string())
+                })
+                .collect();
+            paths.sort();
+            paths
+        } else {
+            self.focused_file_path().into_iter().collect()
         }
     }
 
@@ -287,10 +324,6 @@ impl App {
         };
     }
 
-    /// Returns the diff for the currently selected file, spawning `git diff`
-    /// only if the (path, mode) pair isn't already cached — the render loop
-    /// calls this every frame regardless of whether anything changed, so
-    /// without caching this would shell out to git continuously.
     pub fn selected_file_diff(&mut self) -> Option<std::result::Result<String, String>> {
         let path = self.selected_file_path()?;
         if let Some((cached_path, cached_mode, cached_result)) = &self.diff_cache {
@@ -320,12 +353,6 @@ impl App {
         self.diff_scroll = new as u16;
     }
 
-    /// Toggles stage/unstage for every path in `paths`. An untracked file or
-    /// one with no staged changes gets staged; a fully-staged file gets
-    /// unstaged. Partially-staged files are left as a working-tree-only
-    /// `git add` (simplest, predictable behavior for v1). Each path is
-    /// toggled according to its own current state, so a mixed batch selection
-    /// stages some and unstages others as appropriate.
     pub fn toggle_stage_paths(&mut self, paths: &[String]) -> Result<()> {
         if paths.is_empty() {
             return Ok(());
@@ -344,10 +371,6 @@ impl App {
         self.refresh()
     }
 
-    /// Kicks off `git push` on a background thread (it's network-bound and
-    /// can take a noticeable while) and returns immediately so the render
-    /// loop keeps animating a spinner via `poll_push` instead of the whole
-    /// TUI freezing for the duration of the push.
     pub fn start_push(&mut self) {
         if self.push_pending.is_some() {
             return;
@@ -362,10 +385,6 @@ impl App {
         self.spinner_frame = 0;
     }
 
-    /// Non-blocking check for a background push started by `start_push`.
-    /// Called every iteration of the main loop so the spinner advances on
-    /// every redraw tick (~250ms) regardless of key input, and the result
-    /// (success/failure) lands in `status_message` as soon as it's ready.
     pub fn poll_push(&mut self) {
         let Some(rx) = &self.push_pending else {
             return;
@@ -390,7 +409,6 @@ impl App {
             }
         }
     }
-
 }
 
 fn clamp_index(current: usize, delta: i32, len: usize) -> usize {

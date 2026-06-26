@@ -2,7 +2,7 @@ use crate::app::commit::{commit_changelist, CommitOutcome};
 use crate::error::Result;
 use crate::model::changelist::{new_changelist_id, Changelist, ChangelistId, DEFAULT_CHANGELIST_ID};
 
-use super::{App, Pane};
+use super::{App, TreeRow};
 
 #[derive(Debug, Clone)]
 pub enum Popup {
@@ -32,7 +32,7 @@ pub enum Action {
     CyclePaneBack,
     MoveSelection(i32),
     ScrollHorizontal(i32),
-    EnterFilesPane,
+    ToggleCollapse,
     Refresh,
     Quit,
     OpenNewChangelist,
@@ -71,9 +71,15 @@ impl App {
             Action::CyclePaneBack => self.cycle_pane_back(),
             Action::MoveSelection(delta) => self.move_selection(delta),
             Action::ScrollHorizontal(delta) => self.scroll_horizontal(delta),
-            Action::EnterFilesPane => {
-                if self.focused_pane == Pane::Changelists {
-                    self.focused_pane = Pane::Files;
+            Action::ToggleCollapse => {
+                if let Some(TreeRow::Header(cl_idx)) = self.tree_rows.get(self.tree_cursor).cloned() {
+                    if self.collapsed.contains(&cl_idx) {
+                        self.collapsed.remove(&cl_idx);
+                    } else {
+                        self.collapsed.insert(cl_idx);
+                    }
+                    self.rebuild_tree_rows();
+                    self.clamp_selection();
                 }
             }
             Action::Refresh => {
@@ -90,8 +96,8 @@ impl App {
                 });
             }
             Action::OpenRename => {
-                if self.focused_pane == Pane::Changelists {
-                    if let Some(id) = self.selected_changelist_id() {
+                if self.cursor_on_header() {
+                    if let Some(id) = self.focused_changelist_id() {
                         let name = self
                             .store
                             .changelist_by_id(&id)
@@ -102,7 +108,7 @@ impl App {
                 }
             }
             Action::OpenMove => {
-                if self.focused_pane == Pane::Files {
+                if self.cursor_on_file() {
                     let paths = self.selected_file_paths();
                     self.exit_visual_mode();
                     if !paths.is_empty() {
@@ -111,8 +117,8 @@ impl App {
                 }
             }
             Action::OpenConfirmDelete => {
-                if self.focused_pane == Pane::Changelists {
-                    if let Some(id) = self.selected_changelist_id() {
+                if self.cursor_on_header() {
+                    if let Some(id) = self.focused_changelist_id() {
                         if id != DEFAULT_CHANGELIST_ID {
                             self.popup = Some(Popup::ConfirmDelete { id });
                         } else {
@@ -123,8 +129,8 @@ impl App {
                 }
             }
             Action::OpenCommit => {
-                if self.focused_pane == Pane::Changelists {
-                    if let Some(id) = self.selected_changelist_id() {
+                if self.cursor_on_header() {
+                    if let Some(id) = self.focused_changelist_id() {
                         if self.store.files_in(&id).is_empty() {
                             self.status_message =
                                 Some("nothing to commit: changelist is empty".to_string());
@@ -139,8 +145,8 @@ impl App {
             }
             Action::Push => self.start_push(),
             Action::SetActiveSelected => {
-                if self.focused_pane == Pane::Changelists {
-                    if let Some(id) = self.selected_changelist_id() {
+                if self.cursor_on_header() {
+                    if let Some(id) = self.focused_changelist_id() {
                         self.store.active_changelist = id;
                         self.store.save(&self.repo_root)?;
                     }
@@ -214,6 +220,8 @@ impl App {
                     let id = new_changelist_id();
                     self.store.changelists.push(Changelist::new(id, name, None));
                     self.store.save(&self.repo_root)?;
+                    self.rebuild_tree_rows();
+                    self.clamp_selection();
                 }
                 self.popup = None;
             }
@@ -224,6 +232,7 @@ impl App {
                         cl.name = name;
                     }
                     self.store.save(&self.repo_root)?;
+                    self.rebuild_tree_rows();
                 }
                 self.popup = None;
             }
@@ -234,6 +243,8 @@ impl App {
                         self.store.files.insert(path, target_id.clone());
                     }
                     self.store.save(&self.repo_root)?;
+                    self.rebuild_tree_rows();
+                    self.clamp_selection();
                 }
                 self.popup = None;
             }
@@ -249,6 +260,7 @@ impl App {
                 }
                 self.store.save(&self.repo_root)?;
                 self.popup = None;
+                self.rebuild_tree_rows();
                 self.clamp_selection();
             }
             Popup::CommitMessage { id, buffer } => {

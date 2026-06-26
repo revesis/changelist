@@ -38,7 +38,7 @@ fn map_normal_key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         KeyCode::Char('h') | KeyCode::Left => Some(Action::ScrollHorizontal(-1)),
         KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Refresh),
         KeyCode::F(5) => Some(Action::Refresh),
-        KeyCode::Enter => Some(Action::EnterFilesPane),
+        KeyCode::Enter => Some(Action::ToggleCollapse),
         KeyCode::Char('n') => Some(Action::OpenNewChangelist),
         KeyCode::Char('r') => Some(Action::OpenRename),
         KeyCode::Char('m') => Some(Action::OpenMove),
