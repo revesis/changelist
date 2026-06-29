@@ -9,21 +9,15 @@ pub fn map_key(app: &App, code: KeyCode, modifiers: KeyModifiers) -> Option<Acti
         // The move-target popup is a picker (list of changelists), not a
         // text field, so it also accepts j/k like the rest of the app.
         if matches!(popup, Popup::MoveFile { .. }) {
-            if let Some(action) = map_picker_key(code) {
-                return Some(action);
+            match code {
+                KeyCode::Char('j') => return Some(Action::MoveSelection(1)),
+                KeyCode::Char('k') => return Some(Action::MoveSelection(-1)),
+                _ => {}
             }
         }
         return map_input_key(code);
     }
     map_normal_key(code, modifiers)
-}
-
-fn map_picker_key(code: KeyCode) -> Option<Action> {
-    match code {
-        KeyCode::Char('j') => Some(Action::MoveSelection(1)),
-        KeyCode::Char('k') => Some(Action::MoveSelection(-1)),
-        _ => None,
-    }
 }
 
 fn map_normal_key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
