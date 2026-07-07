@@ -18,6 +18,8 @@ pub enum AppError {
     },
     #[error("failed to parse changelist store: {0}")]
     StoreParse(#[from] serde_json::Error),
+    #[error("shelf entry not found (already unshelved or deleted?)")]
+    ShelfNotFound,
     #[error("not inside a git repository (or git is not installed)")]
     NotARepo,
 }

@@ -1,4 +1,5 @@
 use crate::app::commit::{commit_changelist, CommitOutcome};
+use crate::app::shelve::{delete_shelf, shelve_changelist, unshelve, ShelveOutcome};
 use crate::error::Result;
 use crate::model::changelist::{new_changelist_id, Changelist, ChangelistId, DEFAULT_CHANGELIST_ID};
 
@@ -24,6 +25,16 @@ pub enum Popup {
         id: ChangelistId,
         buffer: String,
     },
+    ShelveName {
+        id: ChangelistId,
+        buffer: String,
+    },
+    Unshelve {
+        selected: usize,
+    },
+    ConfirmDeleteShelf {
+        selected: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +51,9 @@ pub enum Action {
     OpenMove,
     OpenConfirmDelete,
     OpenCommit,
+    OpenShelve,
+    OpenUnshelve,
+    DeleteShelf,
     Push,
     SetActiveSelected,
     InputChar(char),
@@ -143,7 +157,42 @@ impl App {
                     }
                 }
             }
-            Action::Push => self.start_push(),
+            Action::OpenShelve => {
+                if self.cursor_on_header() {
+                    if let Some(id) = self.focused_changelist_id() {
+                        if self.store.files_in(&id).is_empty() {
+                            self.status_message =
+                                Some("nothing to shelve: changelist is empty".to_string());
+                        } else {
+                            let name = self
+                                .store
+                                .changelist_by_id(&id)
+                                .map(|c| c.name.clone())
+                                .unwrap_or_default();
+                            self.popup = Some(Popup::ShelveName { id, buffer: name });
+                        }
+                    }
+                }
+            }
+            Action::OpenUnshelve => {
+                if self.shelf.entries.is_empty() {
+                    self.status_message = Some("shelf is empty".to_string());
+                } else {
+                    self.popup = Some(Popup::Unshelve { selected: 0 });
+                }
+            }
+            Action::DeleteShelf => {} // only meaningful inside the Unshelve popup
+            Action::Push => {
+                if self.interactive_push_hint {
+                    // Previous batch push failed needing terminal input;
+                    // this press escalates to an interactive push, executed
+                    // by the main loop (which owns the terminal).
+                    self.interactive_push_hint = false;
+                    self.wants_interactive_push = true;
+                } else {
+                    self.start_push();
+                }
+            }
             Action::SetActiveSelected => {
                 if self.cursor_on_header() {
                     if let Some(id) = self.focused_changelist_id() {
@@ -184,16 +233,32 @@ impl App {
                 }
             }
             Action::MoveSelection(delta) => {
-                let len = self.store.changelists.len();
-                if let Some(Popup::MoveFile { selected, .. }) = self.popup.as_mut() {
-                    if len > 0 {
-                        let new = (*selected as i32 + delta).clamp(0, len as i32 - 1);
+                let cl_len = self.store.changelists.len();
+                let shelf_len = self.shelf.entries.len();
+                match self.popup.as_mut() {
+                    Some(Popup::MoveFile { selected, .. }) if cl_len > 0 => {
+                        let new = (*selected as i32 + delta).clamp(0, cl_len as i32 - 1);
                         *selected = new as usize;
                     }
+                    Some(Popup::Unshelve { selected }) if shelf_len > 0 => {
+                        let new = (*selected as i32 + delta).clamp(0, shelf_len as i32 - 1);
+                        *selected = new as usize;
+                    }
+                    _ => {}
+                }
+            }
+            Action::DeleteShelf => {
+                if let Popup::Unshelve { selected } = popup {
+                    self.popup = Some(Popup::ConfirmDeleteShelf { selected });
                 }
             }
             Action::Cancel => {
-                self.popup = None;
+                // Esc on the delete confirmation steps back to the shelf
+                // list instead of closing everything.
+                self.popup = match popup {
+                    Popup::ConfirmDeleteShelf { selected } => Some(Popup::Unshelve { selected }),
+                    _ => None,
+                };
             }
             Action::Confirm => {
                 self.confirm_popup(popup)?;
@@ -208,6 +273,7 @@ impl App {
             Popup::NewChangelist { buffer } => Some(buffer),
             Popup::Rename { buffer, .. } => Some(buffer),
             Popup::CommitMessage { buffer, .. } => Some(buffer),
+            Popup::ShelveName { buffer, .. } => Some(buffer),
             _ => None,
         }
     }
@@ -285,6 +351,68 @@ impl App {
                         self.status_message = Some(format!("commit failed: {e}"));
                     }
                 }
+            }
+            Popup::ShelveName { id, buffer } => {
+                let name = buffer.trim().to_string();
+                if name.is_empty() {
+                    self.status_message = Some("shelf name cannot be empty".to_string());
+                    return Ok(());
+                }
+                match shelve_changelist(&self.repo_root, &self.store, &mut self.shelf, &id, &name)
+                {
+                    Ok(ShelveOutcome::Shelved { paths }) => {
+                        self.status_message =
+                            Some(format!("shelved {} file(s) as \"{name}\"", paths.len()));
+                        self.popup = None;
+                        self.refresh()?;
+                    }
+                    Ok(ShelveOutcome::EmptyChangelist) => {
+                        self.status_message =
+                            Some("nothing to shelve: changelist is empty".to_string());
+                        self.popup = None;
+                    }
+                    Err(e) => {
+                        self.status_message = Some(format!("shelve failed: {e}"));
+                    }
+                }
+            }
+            Popup::Unshelve { selected } => {
+                let Some(entry) = self.shelf.entries.get(selected) else {
+                    self.popup = None;
+                    return Ok(());
+                };
+                let shelf_id = entry.id.clone();
+                match unshelve(&self.repo_root, &mut self.store, &mut self.shelf, &shelf_id) {
+                    Ok(entry) => {
+                        self.status_message = Some(format!(
+                            "unshelved {} file(s) to \"{}\"",
+                            entry.files.len(),
+                            entry.name
+                        ));
+                        self.popup = None;
+                        self.refresh()?;
+                    }
+                    Err(e) => {
+                        // The shelf entry survives an apply failure — nothing lost.
+                        self.status_message = Some(format!("unshelve failed: {e}"));
+                        self.popup = None;
+                    }
+                }
+            }
+            Popup::ConfirmDeleteShelf { selected } => {
+                if let Some(entry) = self.shelf.entries.get(selected) {
+                    let shelf_id = entry.id.clone();
+                    let name = entry.name.clone();
+                    delete_shelf(&self.repo_root, &mut self.shelf, &shelf_id)?;
+                    self.status_message = Some(format!("deleted shelf \"{name}\""));
+                }
+                self.popup = if self.shelf.entries.is_empty() {
+                    None
+                } else {
+                    Some(Popup::Unshelve {
+                        selected: selected.min(self.shelf.entries.len() - 1),
+                    })
+                };
             }
         }
         Ok(())

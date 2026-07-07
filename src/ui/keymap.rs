@@ -15,6 +15,16 @@ pub fn map_key(app: &App, code: KeyCode, modifiers: KeyModifiers) -> Option<Acti
                 _ => {}
             }
         }
+        // The unshelve popup is also a picker; `d` deletes the selected
+        // shelf (after a confirmation step).
+        if matches!(popup, Popup::Unshelve { .. }) {
+            match code {
+                KeyCode::Char('j') => return Some(Action::MoveSelection(1)),
+                KeyCode::Char('k') => return Some(Action::MoveSelection(-1)),
+                KeyCode::Char('d') => return Some(Action::DeleteShelf),
+                _ => {}
+            }
+        }
         return map_input_key(code);
     }
     map_normal_key(code, modifiers)
@@ -38,6 +48,8 @@ fn map_normal_key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         KeyCode::Char('m') => Some(Action::OpenMove),
         KeyCode::Char('d') => Some(Action::OpenConfirmDelete),
         KeyCode::Char('c') => Some(Action::OpenCommit),
+        KeyCode::Char('S') => Some(Action::OpenShelve),
+        KeyCode::Char('U') => Some(Action::OpenUnshelve),
         KeyCode::Char('P') => Some(Action::Push),
         KeyCode::Char('a') => Some(Action::SetActiveSelected),
         KeyCode::Char('v') => Some(Action::ToggleDiffMode),

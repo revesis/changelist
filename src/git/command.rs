@@ -39,6 +39,29 @@ pub fn run_git_with_env(
     Ok(output.stdout)
 }
 
+/// Runs git with stdin/stdout/stderr inherited from the parent process,
+/// for the rare command that is deliberately interactive (see
+/// `index_ops::push_interactive`). Only valid while the TUI has handed the
+/// real terminal back — the caller must have left raw mode and the
+/// alternate screen first, and restore them afterwards. stderr is not
+/// captured (the user watches it live), so the returned `NonZeroExit`
+/// carries only the status code.
+pub fn run_git_interactive(repo_root: &Path, args: &[&str]) -> Result<(), GitError> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .status()
+        .map_err(GitError::Spawn)?;
+    if !status.success() {
+        return Err(GitError::NonZeroExit {
+            status: status.code().unwrap_or(-1),
+            stderr: String::new(),
+        });
+    }
+    Ok(())
+}
+
 pub fn discover_repo_root(start: &Path) -> Option<std::path::PathBuf> {
     let output = Command::new("git")
         .arg("-C")

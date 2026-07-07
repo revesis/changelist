@@ -50,7 +50,10 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         "a                 set selected changelist active (cursor on header)",
         "m                 move selected (or visual-range) files (cursor on file)",
         "c                 commit selected changelist (cursor on header)",
-        "Shift+P           push current branch",
+        "Shift+S           shelve selected changelist (cursor on header)",
+        "Shift+U           unshelve / manage shelved changes",
+        "Shift+P           push current branch (if it fails needing",
+        "                  input, press again to push interactively)",
         "Ctrl+R / F5       manual refresh",
         "?                 toggle this help",
         "q / Ctrl+C        quit",
@@ -187,7 +190,7 @@ fn status_badge(app: &App, path: &str) -> String {
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let text = app.status_message.clone().unwrap_or_else(|| {
-        "Tab:pane j/k:move h/l:hscroll Space:stage V:visual v:diff-mode n:new r:rename d:delete a:active m:move c:commit P:push ?:help q:quit"
+        "Tab:pane j/k:move h/l:hscroll Space:stage V:visual v:diff-mode n:new r:rename d:delete a:active m:move c:commit S:shelve U:unshelve P:push ?:help q:quit"
             .to_string()
     });
     frame.render_widget(Paragraph::new(text), area);

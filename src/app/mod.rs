@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod commit;
+pub mod shelve;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -8,7 +9,7 @@ use crate::error::{AppError, Result};
 use crate::git::diff::{diff_staged, diff_worktree};
 use crate::git::index_ops::{add as git_add, push as git_push, reset_path as git_reset_path};
 use crate::git::status::{git_status, ChangeKind, StatusEntry};
-use crate::model::{ChangelistId, ChangelistStore};
+use crate::model::{ChangelistId, ChangelistStore, ShelfStore};
 
 pub use actions::{Action, Popup};
 
@@ -33,6 +34,7 @@ pub enum DiffMode {
 pub struct App {
     pub repo_root: PathBuf,
     pub store: ChangelistStore,
+    pub shelf: ShelfStore,
     pub status: Vec<StatusEntry>,
     pub focused_pane: Pane,
     pub tree_rows: Vec<TreeRow>,
@@ -49,6 +51,13 @@ pub struct App {
     /// When `Some(idx)`, the tree is in visual (batch-select) mode anchored
     /// at `idx` (an index into `tree_rows` pointing at a File row).
     pub visual_anchor: Option<usize>,
+    /// Set after a batch push failed with a prompt-shaped error: the next
+    /// `Action::Push` requests an interactive push instead of retrying in
+    /// batch mode.
+    pub interactive_push_hint: bool,
+    /// Request flag read by the main loop, which owns the terminal and is
+    /// the only place that can suspend the TUI to run the interactive push.
+    pub wants_interactive_push: bool,
     diff_cache: Option<(String, DiffMode, std::result::Result<String, String>)>,
     push_pending: Option<std::sync::mpsc::Receiver<std::result::Result<(), String>>>,
     spinner_frame: usize,
@@ -59,9 +68,11 @@ const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '�
 impl App {
     pub fn new(repo_root: PathBuf) -> Result<Self> {
         let store = ChangelistStore::load(&repo_root)?;
+        let shelf = ShelfStore::load(&repo_root)?;
         let mut app = App {
             repo_root,
             store,
+            shelf,
             status: Vec::new(),
             focused_pane: Pane::Tree,
             tree_rows: Vec::new(),
@@ -76,6 +87,8 @@ impl App {
             diff_scroll: 0,
             diff_hscroll: 0,
             visual_anchor: None,
+            interactive_push_hint: false,
+            wants_interactive_push: false,
             diff_cache: None,
             push_pending: None,
             spinner_frame: 0,
@@ -375,6 +388,7 @@ impl App {
         if self.push_pending.is_some() {
             return;
         }
+        self.interactive_push_hint = false;
         let (tx, rx) = std::sync::mpsc::channel();
         let repo_root = self.repo_root.clone();
         std::thread::spawn(move || {
@@ -395,7 +409,18 @@ impl App {
                 self.push_pending = None;
             }
             Ok(Err(e)) => {
-                self.status_message = Some(format!("push failed: {e}"));
+                // git/ssh stderr is multi-line; the status bar shows a
+                // single line, so flatten it or only "push failed:" and a
+                // blank remainder would be visible.
+                let flat = e.split_whitespace().collect::<Vec<_>>().join(" ");
+                if push_error_needs_terminal(&flat) {
+                    self.interactive_push_hint = true;
+                    self.status_message = Some(format!(
+                        "push needs terminal input — press Shift+P again to push interactively ({flat})"
+                    ));
+                } else {
+                    self.status_message = Some(format!("push failed: {flat}"));
+                }
                 self.push_pending = None;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -414,4 +439,52 @@ impl App {
 fn clamp_index(current: usize, delta: i32, len: usize) -> usize {
     let new = current as i32 + delta;
     new.clamp(0, len as i32 - 1) as usize
+}
+
+/// True when a push failure is prompt-shaped — the kind that a rerun with
+/// a real terminal (interactive push) could resolve by letting git or ssh
+/// ask the user something, rather than a genuine push error like a
+/// non-fast-forward rejection.
+fn push_error_needs_terminal(message: &str) -> bool {
+    let m = message.to_lowercase();
+    [
+        // git with GIT_TERMINAL_PROMPT=0 and no cached HTTPS credentials
+        "could not read username",
+        "could not read password",
+        "terminal prompts disabled",
+        // ssh with BatchMode=yes
+        "host key verification failed",
+        "permission denied",
+        "authentication failed",
+    ]
+    .iter()
+    .any(|marker| m.contains(marker))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::push_error_needs_terminal;
+
+    #[test]
+    fn prompt_shaped_push_errors_are_detected() {
+        assert!(push_error_needs_terminal(
+            "git exited with 128: fatal: could not read Username for 'https://x': terminal prompts disabled"
+        ));
+        assert!(push_error_needs_terminal(
+            "git exited with 128: Host key verification failed. fatal: Could not read from remote repository."
+        ));
+        assert!(push_error_needs_terminal(
+            "git exited with 128: git@host: Permission denied (publickey,password)."
+        ));
+    }
+
+    #[test]
+    fn genuine_push_errors_are_not_prompt_shaped() {
+        assert!(!push_error_needs_terminal(
+            "git exited with 1: error: failed to push some refs to 'origin' (non-fast-forward)"
+        ));
+        assert!(!push_error_needs_terminal(
+            "git exited with 128: fatal: The current branch main has no upstream branch."
+        ));
+    }
 }

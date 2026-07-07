@@ -47,7 +47,61 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 .unwrap_or_default();
             draw_text_input(frame, area, &format!("Commit message for \"{name}\""), buffer);
         }
+        Popup::ShelveName { id, buffer } => {
+            let name = app
+                .store
+                .changelist_by_id(id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            draw_text_input(frame, area, &format!("Shelve \"{name}\" as..."), buffer);
+        }
+        Popup::Unshelve { selected } => {
+            draw_shelf_picker(frame, app, area, *selected);
+        }
+        Popup::ConfirmDeleteShelf { selected } => {
+            let name = app
+                .shelf
+                .entries
+                .get(*selected)
+                .map(|e| e.name.clone())
+                .unwrap_or_default();
+            let msg = format!(
+                "Delete shelf \"{name}\"? Its changes are lost permanently.\n[Enter] confirm  [Esc] back"
+            );
+            draw_message(frame, area, "Confirm delete shelf", &msg);
+        }
     }
+}
+
+fn draw_shelf_picker(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
+    let popup_area = centered(area, 62, (app.shelf.entries.len() as u16 + 2).min(12));
+    frame.render_widget(Clear, popup_area);
+    let items: Vec<ListItem> = app
+        .shelf
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let style = if idx == selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            // created_at is RFC 3339; the first 16 chars are "YYYY-MM-DDThh:mm".
+            let date = entry
+                .created_at
+                .get(..16)
+                .unwrap_or(&entry.created_at)
+                .replace('T', " ");
+            let text = format!("{}  ({} files, {date})", entry.name, entry.files.len());
+            ListItem::new(text).style(style)
+        })
+        .collect();
+    let block = Block::default()
+        .title("Unshelve  [Enter] apply  [d] delete  [Esc] close")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(List::new(items).block(block), popup_area);
 }
 
 fn draw_text_input(frame: &mut Frame, area: Rect, title: &str, buffer: &str) {
