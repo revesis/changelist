@@ -83,3 +83,10 @@ TUI.
 - A partially-staged file commits/shelves its working-tree content; the
   staged/unstaged split within a file is not preserved.
 - No multi-VCS support or remote sync.
+
+## 💖 Support & Donations
+
+
+| Coin | Network | Address |
+| :--- | :--- | :--- |
+| **SOL** | Solana | `GnXfjr5Kq4tpijwfeMbtnqicLFptXXP5rV79axB1M6F5` |
