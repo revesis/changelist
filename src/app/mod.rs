@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::error::{AppError, Result};
-use crate::git::diff::{diff_staged, diff_worktree};
+use crate::git::diff::{diff_staged, diff_untracked, diff_worktree};
 use crate::git::index_ops::{add as git_add, push as git_push, reset_path as git_reset_path};
 use crate::git::status::{git_status, ChangeKind, StatusEntry};
 use crate::model::{ChangelistId, ChangelistStore, ShelfStore};
@@ -344,7 +344,9 @@ impl App {
                 return Some(cached_result.clone());
             }
         }
+        let untracked = self.status_entry_for(&path).is_some_and(|e| e.untracked);
         let result = match self.diff_mode {
+            DiffMode::WorkTree if untracked => diff_untracked(&self.repo_root, &path),
             DiffMode::WorkTree => diff_worktree(&self.repo_root, &path),
             DiffMode::Staged => diff_staged(&self.repo_root, &path),
         }

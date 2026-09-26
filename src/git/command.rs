@@ -20,6 +20,26 @@ pub fn run_git_with_env(
     args: &[&str],
     envs: &[(&str, &str)],
 ) -> Result<Vec<u8>, GitError> {
+    run_git_inner(repo_root, args, envs, &[0])
+}
+
+/// Like `run_git`, but treats every exit code in `ok_codes` as success.
+/// Needed for `git diff --no-index`, which (like plain `diff`) exits 1
+/// when the inputs differ — the normal case, not an error.
+pub fn run_git_allowing(
+    repo_root: &Path,
+    args: &[&str],
+    ok_codes: &[i32],
+) -> Result<Vec<u8>, GitError> {
+    run_git_inner(repo_root, args, &[], ok_codes)
+}
+
+fn run_git_inner(
+    repo_root: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    ok_codes: &[i32],
+) -> Result<Vec<u8>, GitError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -29,7 +49,8 @@ pub fn run_git_with_env(
         .output()
         .map_err(GitError::Spawn)?;
 
-    if !output.status.success() {
+    let ok = output.status.code().is_some_and(|c| ok_codes.contains(&c));
+    if !ok {
         return Err(GitError::NonZeroExit {
             status: output.status.code().unwrap_or(-1),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
