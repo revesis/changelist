@@ -18,6 +18,7 @@ cargo build --release
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | Cycle pane focus (tree ↔ diff) |
+| `o` | Open the selected file's diff (jump focus to the diff pane) |
 | `j`/`k`, `↓`/`↑` | Move selection, or scroll the diff when it's focused |
 | `h`/`l`, `←`/`→` | Scroll the focused pane horizontally (long paths/lines) |
 | `Enter` | Fold/unfold the changelist under the cursor |

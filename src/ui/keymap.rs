@@ -36,6 +36,7 @@ fn map_normal_key(code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
         KeyCode::Tab => Some(Action::CyclePane),
         KeyCode::BackTab => Some(Action::CyclePaneBack),
+        KeyCode::Char('o') => Some(Action::OpenDiff),
         KeyCode::Char('j') | KeyCode::Down => Some(Action::MoveSelection(1)),
         KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveSelection(-1)),
         KeyCode::Char('l') | KeyCode::Right => Some(Action::ScrollHorizontal(1)),

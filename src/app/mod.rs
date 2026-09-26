@@ -268,6 +268,17 @@ impl App {
         };
     }
 
+    /// Jumps from a file row in the tree straight into the diff pane. No-op
+    /// on a changelist header (there's no diff to focus) or when the diff
+    /// pane already has focus.
+    pub fn open_diff(&mut self) {
+        if self.focused_pane != Pane::Tree || !self.cursor_on_file() {
+            return;
+        }
+        self.visual_anchor = None;
+        self.focused_pane = Pane::Diff;
+    }
+
     pub fn toggle_visual_mode(&mut self) {
         if !self.cursor_on_file() {
             return;
@@ -465,7 +476,33 @@ fn push_error_needs_terminal(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::push_error_needs_terminal;
+    use super::{push_error_needs_terminal, Action, App, Pane};
+
+    #[test]
+    fn o_on_file_row_focuses_diff_pane_but_not_on_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.path().join("new.txt"), "hi\n").unwrap();
+
+        let mut app = App::new(dir.path().to_path_buf()).unwrap();
+        app.tree_cursor = 0; // Default changelist header
+        app.dispatch(Action::OpenDiff).unwrap();
+        assert_eq!(app.focused_pane, Pane::Tree);
+
+        app.tree_cursor = 1; // new.txt
+        app.dispatch(Action::OpenDiff).unwrap();
+        assert_eq!(app.focused_pane, Pane::Diff);
+    }
 
     #[test]
     fn prompt_shaped_push_errors_are_detected() {

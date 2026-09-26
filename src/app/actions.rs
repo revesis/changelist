@@ -41,6 +41,7 @@ pub enum Popup {
 pub enum Action {
     CyclePane,
     CyclePaneBack,
+    OpenDiff,
     MoveSelection(i32),
     ScrollHorizontal(i32),
     ToggleCollapse,
@@ -83,6 +84,7 @@ impl App {
         match action {
             Action::CyclePane => self.cycle_pane(),
             Action::CyclePaneBack => self.cycle_pane_back(),
+            Action::OpenDiff => self.open_diff(),
             Action::MoveSelection(delta) => self.move_selection(delta),
             Action::ScrollHorizontal(delta) => self.scroll_horizontal(delta),
             Action::ToggleCollapse => {
